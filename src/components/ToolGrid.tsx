@@ -5,7 +5,9 @@ export function ToolGrid() {
   return (
     <div className="space-y-10">
       {categories.map((category) => {
-        const items = toolsByCategory(category.id);
+        const items = toolsByCategory(category.id).filter((tool) => tool.available);
+        if (items.length === 0) return null;
+
         return (
           <section key={category.id} className="space-y-4">
             <div className="flex items-center gap-3">
