@@ -26,19 +26,14 @@ export function AppShell({ children }: { children: React.ReactNode }) {
               <p className="text-xs text-zinc-500">Personal desktop toolkit</p>
             </div>
           </Link>
-          <div className="flex items-center gap-3 text-xs text-zinc-400">
-            <span className="rounded-full border border-white/10 bg-white/5 px-3 py-1">
-              Dark · Hybrid
-            </span>
-            {!isHome && (
-              <Link
-                href="/"
-                className="rounded-full border border-white/10 px-3 py-1 transition hover:border-teal-300/40 hover:text-teal-200"
-              >
-                All tools
-              </Link>
-            )}
-          </div>
+          {!isHome && (
+            <Link
+              href="/"
+              className="rounded-full border border-white/10 px-3 py-1 text-xs text-zinc-400 transition hover:border-teal-300/40 hover:text-teal-200"
+            >
+              All tools
+            </Link>
+          )}
         </div>
       </header>
 
