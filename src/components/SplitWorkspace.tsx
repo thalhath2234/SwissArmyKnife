@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
+  Download,
   FilePlus2,
   Info,
   LoaderCircle,
@@ -66,6 +67,7 @@ export function SplitWorkspace({
   const [useEveryN, setUseEveryN] = useState(false);
   const [separateFiles, setSeparateFiles] = useState(true);
   const [outputName, setOutputName] = useState("split");
+  const [groupNames, setGroupNames] = useState<Record<number, string>>({});
   const [peekId, setPeekId] = useState<string | null>(null);
   const addInputRef = useRef<HTMLInputElement>(null);
   const loadToken = useRef(0);
@@ -74,6 +76,17 @@ export function SplitWorkspace({
     () => buildGroupsFromSplits(pages.length, splitAfter),
     [pages.length, splitAfter],
   );
+
+  const namedGroups = useMemo(() => {
+    const prefix = outputName.trim() || "split";
+    return groups.map((indexes, groupIndex) => {
+      const start = indexes[0] ?? 0;
+      const end = indexes[indexes.length - 1] ?? start;
+      const fallback = `${prefix}-part-${groupIndex + 1}`;
+      const name = groupNames[start]?.trim() || fallback;
+      return { indexes, groupIndex, start, end, name };
+    });
+  }, [groups, groupNames, outputName]);
 
   const peekPage = pages.find((page) => page.id === peekId) ?? null;
   const peekIndex = peekPage
@@ -115,6 +128,7 @@ export function SplitWorkspace({
         setFiles(nextFiles);
         revokePageThumbnails(pages.map((page) => ({ url: page.previewUrl })));
         setSplitAfter(new Set());
+        setGroupNames({});
         setPages([]);
       }
 
@@ -236,6 +250,52 @@ export function SplitWorkspace({
     });
   }
 
+  function uniqueFileName(name: string, used: Set<string>): string {
+    const sanitized = sanitizeOutputName(name, "part");
+    const base = sanitized.replace(/\.pdf$/i, "");
+    let candidate = `${base}.pdf`;
+    let suffix = 2;
+    while (used.has(candidate.toLowerCase())) {
+      candidate = `${base}-${suffix}.pdf`;
+      suffix += 1;
+    }
+    used.add(candidate.toLowerCase());
+    return candidate;
+  }
+
+  async function buildGroupPdf(indexes: number[]) {
+    return buildPdfFromMultiSource(
+      indexes.map((pageIndex) => {
+        const page = pages[pageIndex];
+        return {
+          fileId: page.fileId,
+          sourceIndex: page.sourceIndex,
+          rotation: page.rotation,
+        };
+      }),
+      sources,
+    );
+  }
+
+  async function extractGroup(groupIndex: number) {
+    const group = namedGroups[groupIndex];
+    if (!group || pages.length === 0) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const bytes = await buildGroupPdf(group.indexes);
+      downloadBytes(
+        bytes,
+        uniqueFileName(group.name, new Set()),
+        "application/pdf",
+      );
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not extract this split.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function runAction() {
     if (pages.length === 0) return;
     setBusy(true);
@@ -244,20 +304,20 @@ export function SplitWorkspace({
       const base = outputName.trim() || mode;
 
       if (mode === "split") {
-        const parts = groups.length ? groups : [pages.map((_, i) => i)];
-        for (const [groupIndex, indexes] of parts.entries()) {
-          const ops = indexes.map((pageIndex) => {
-            const page = pages[pageIndex];
-            return {
-              fileId: page.fileId,
-              sourceIndex: page.sourceIndex,
-              rotation: page.rotation,
-            };
-          });
-          const bytes = await buildPdfFromMultiSource(ops, sources);
+        const parts = namedGroups.length
+          ? namedGroups
+          : [
+              {
+                indexes: pages.map((_, i) => i),
+                name: outputName.trim() || "split",
+              },
+            ];
+        const used = new Set<string>();
+        for (const group of parts) {
+          const bytes = await buildGroupPdf(group.indexes);
           downloadBytes(
             bytes,
-            `${base}-part-${groupIndex + 1}.pdf`,
+            uniqueFileName(group.name, used),
             "application/pdf",
           );
         }
@@ -313,7 +373,7 @@ export function SplitWorkspace({
           </h1>
           <p className="mt-2 max-w-2xl text-sm leading-relaxed text-zinc-400">
             {mode === "split"
-              ? "Click between pages to add colored split points. Each group becomes its own PDF."
+              ? "Click between pages to add colored split points. Name each group, then extract one split or download them all."
               : "Select the pages you want, then extract into one PDF or separate files."}
           </p>
         </div>
@@ -436,7 +496,7 @@ export function SplitWorkspace({
               />
 
               <label className="ml-auto flex min-w-[180px] items-center gap-2 text-xs text-zinc-400">
-                Name
+                {mode === "split" ? "Prefix" : "Name"}
                 <input
                   type="text"
                   value={outputName}
@@ -463,12 +523,72 @@ export function SplitWorkspace({
               <p className="inline-flex items-center gap-1.5">
                 <Info className="h-3.5 w-3.5" />
                 {mode === "split"
-                  ? "Click between pages to split."
+                  ? "Click between pages to split. Name each group below."
                   : "Choose pages to extract."}
               </p>
               <p>{statusText}</p>
             </div>
           </>
+        )}
+
+        {mode === "split" && files.length > 0 && namedGroups.length > 0 && !loading && (
+          <div className="space-y-2 rounded-2xl border border-white/8 bg-black/20 p-4">
+            <div className="flex items-center justify-between gap-3">
+              <p className="text-xs uppercase tracking-[0.18em] text-zinc-500">
+                Splits
+              </p>
+              <p className="text-xs text-zinc-500">
+                Extract one group, or use Split PDF for all
+              </p>
+            </div>
+            <div className="space-y-2">
+              {namedGroups.map((group) => {
+                const color =
+                  SPLIT_COLORS[group.groupIndex % SPLIT_COLORS.length];
+                const pageLabel =
+                  group.start === group.end
+                    ? `Page ${group.start + 1}`
+                    : `Pages ${group.start + 1}–${group.end + 1}`;
+                return (
+                  <div
+                    key={`${group.start}-${group.end}`}
+                    className="flex flex-wrap items-center gap-2 rounded-xl border px-3 py-2"
+                    style={{
+                      borderColor: color.border,
+                      background: color.bg,
+                    }}
+                  >
+                    <span
+                      className="h-2.5 w-2.5 shrink-0 rounded-full"
+                      style={{ backgroundColor: color.accent }}
+                    />
+                    <p className="w-24 shrink-0 text-xs text-zinc-300">{pageLabel}</p>
+                    <input
+                      type="text"
+                      value={groupNames[group.start] ?? ""}
+                      placeholder={`${outputName.trim() || "split"}-part-${group.groupIndex + 1}`}
+                      onChange={(event) =>
+                        setGroupNames((current) => ({
+                          ...current,
+                          [group.start]: event.target.value,
+                        }))
+                      }
+                      className="min-w-[160px] flex-1 rounded-lg border border-white/10 bg-black/40 px-2.5 py-1.5 text-sm text-zinc-100 outline-none placeholder:text-zinc-600 focus:border-teal-300/40"
+                    />
+                    <button
+                      type="button"
+                      disabled={busy || loading}
+                      onClick={() => void extractGroup(group.groupIndex)}
+                      className="inline-flex items-center gap-1.5 rounded-full border border-white/15 px-3 py-1.5 text-xs text-zinc-200 transition hover:border-white/30 hover:text-white disabled:opacity-40"
+                    >
+                      <Download className="h-3.5 w-3.5" />
+                      Extract this split
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
         )}
 
         {error && (
